@@ -1,22 +1,13 @@
 {
-  "host": "pika.host",
+  "host": "",
   "port": 25565,
   "version": "1.20.1",
-  "accountCount": 50,
-  "prefix": "abc123_g",
+  "accountCount": 1,
+  "prefix": "",
   "batchSize": 10,
   "batchAccountDelay": 60000,
   "batchCooldown": 300000,
-  "autoCommands": [
-    {
-      "command": "/server oplifesteal",
-      "delay": 10000
-    },
-    {
-      "command": "/warp afk",
-      "delay": 20000
-    }
-  ],
+  "autoCommands": [],
   "dashboardHost": "127.0.0.1",
   "dashboardPort": 3000,
   "controlHost": "127.0.0.1",
