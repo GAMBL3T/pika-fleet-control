@@ -68,9 +68,6 @@ const CONFIG = {
   reconnectBase: 5000,
   reconnectMax: 120000,
   reconnectFactor: 2,
-
-  // Send a tiny movement every N ms so AFK kickers stay quiet. 0 disables.
-  antiAfkInterval: configNumber('ANTI_AFK', FILE_CONFIG.antiAfkInterval, 0),
 }
 
 const LOG_DIR = path.join(__dirname, 'logs')
@@ -1535,16 +1532,6 @@ function createBot (username) {
 
 // Everything you actually want the bots to DO goes here.
 function onSpawn (username, bot, state) {
-  if (CONFIG.antiAfkInterval > 0) {
-    log(username, `action: anti-AFK look enabled every ${CONFIG.antiAfkInterval}ms`)
-    track(state, setInterval(() => {
-      // A tiny look change is the cheapest thing that counts as activity for
-      // most AFK plugins, and needs no physics.
-      bot.look(Math.random() * Math.PI * 2, 0, false)
-        .catch((err) => log(username, `anti-AFK error: ${err.message}`))
-    }, CONFIG.antiAfkInterval))
-  }
-
   // e.g. bot.chat('/register hunter2 hunter2')
   // e.g. track(state, setTimeout(() => bot.chat('/spawn'), 3000))
 }
