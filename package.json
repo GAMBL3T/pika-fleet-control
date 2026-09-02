@@ -1,0 +1,20 @@
+{
+  "name": "pika-fleet-control",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Persistent Mineflayer fleet workers with a separate local control dashboard.",
+  "main": "dashboard.js",
+  "scripts": {
+    "start": "node dashboard.js",
+    "dashboard": "node dashboard.js",
+    "worker": "node worker.js",
+    "check": "node --check index.js && node --check dashboard.js && node --check worker.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "mineflayer": "^4.38.0",
+    "ws": "^8.18.0"
+  }
+}
