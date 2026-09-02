@@ -71,6 +71,9 @@ const CONFIG = {
 }
 
 const LOG_DIR = path.join(__dirname, 'logs')
+// Bound persistent logs and outbound snapshot queues in long-running fleets.
+const MAX_LOG_FILE_BYTES = Math.max(64 * 1024, Math.floor(configNumber('MAX_LOG_FILE_BYTES', FILE_CONFIG.maxLogFileBytes, 1024 * 1024)))
+const MAX_CONTROL_BUFFERED_BYTES = 4 * 1024 * 1024
 
 function updateAutoCommands (commands) {
   if (!Array.isArray(commands)) throw new Error('Auto commands must be a list.')
@@ -154,12 +157,23 @@ function log (username, msg) {
     state.logs.push({ time: new Date().toISOString(), message: msg })
     if (state.logs.length > 200) state.logs.shift()
     try {
-      fs.appendFileSync(state.logFile, `${line}\n`)
+      appendBoundedLog(state.logFile, `${line}\n`)
     } catch (err) {
       console.error(`Could not write ${username}'s log: ${err.message}`)
     }
   }
   publishDashboard()
+}
+
+function appendBoundedLog (logFile, entry) {
+  const entryBytes = Buffer.byteLength(entry)
+  let currentBytes = 0
+  try { currentBytes = fs.statSync(logFile).size } catch (err) {
+    if (err.code !== 'ENOENT') throw err
+  }
+  // Retain the newest activity rather than growing one file without limit.
+  if (currentBytes + entryBytes > MAX_LOG_FILE_BYTES) fs.writeFileSync(logFile, entry)
+  else fs.appendFileSync(logFile, entry)
 }
 
 // Servers often repeat lobby tips every second. Keep the first occurrence in
@@ -289,12 +303,20 @@ function dashboardState () {
 
 function publishDashboard () {
   const message = JSON.stringify({ type: 'state', state: dashboardState() })
+  const messageBytes = Buffer.byteLength(message)
   for (const client of controlClients) {
-    if (client.readyState !== WebSocket.OPEN) {
+    if (
+      client.readyState !== WebSocket.OPEN ||
+      client.bufferedAmount + messageBytes > MAX_CONTROL_BUFFERED_BYTES
+    ) {
       controlClients.delete(client)
+      try { client.terminate() } catch {}
       continue
     }
-    try { client.send(message) } catch { controlClients.delete(client) }
+    try { client.send(message) } catch {
+      controlClients.delete(client)
+      try { client.terminate() } catch {}
+    }
   }
 }
 

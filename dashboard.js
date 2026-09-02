@@ -15,12 +15,15 @@ const CONTROL_HOST = process.env.CONTROL_HOST || config.controlHost || '127.0.0.
 const CONTROL_PORT = Number(process.env.CONTROL_PORT || config.controlPort || 3001)
 const WORKER_URL = 'ws://' + CONTROL_HOST + ':' + CONTROL_PORT
 const OPEN_DASHBOARD = process.env.OPEN_DASHBOARD === undefined ? (config.openDashboard ?? true) : process.env.OPEN_DASHBOARD !== '0'
+// State updates are complete snapshots, so stale updates must not accumulate
+// behind a slow browser connection.
+const MAX_SSE_BUFFERED_BYTES = 4 * 1024 * 1024
 
 let worker = null
 let reconnectTimer = null
 let nextRequestId = 1
 const pending = new Map()
-const browserClients = new Set()
+const browserClients = new Map()
 let workerStatus = 'Worker offline — retrying'
 let workerState = {
   fleet: { host: config.host || 'localhost', port: config.port || 25565, version: config.version || '—' },
@@ -43,9 +46,30 @@ function stateForBrowser () {
 
 function publish () {
   const event = 'data: ' + JSON.stringify(stateForBrowser()) + '\n\n'
-  for (const client of browserClients) {
-    try { client.write(event) } catch { browserClients.delete(client) }
+  for (const [client, clientState] of browserClients) {
+    if (client.destroyed || client.writableEnded || client.writableLength > MAX_SSE_BUFFERED_BYTES) {
+      discardBrowserClient(client)
+      continue
+    }
+    // A full state supersedes every update emitted while the response drains.
+    if (clientState.blocked) continue
+    try {
+      if (!client.write(event)) {
+        clientState.blocked = true
+        client.once('drain', () => {
+          clientState.blocked = false
+          if (browserClients.has(client)) publish()
+        })
+      }
+    } catch {
+      discardBrowserClient(client)
+    }
   }
+}
+
+function discardBrowserClient (client) {
+  browserClients.delete(client)
+  try { client.destroy() } catch {}
 }
 
 function connectWorker () {
@@ -96,16 +120,41 @@ function workerRequest (action, payload) {
   })
 }
 
-function readBody (req) {
+function readBody (req, maxBytes = 20_000) {
   return new Promise((resolve, reject) => {
     let body = ''
-    req.on('data', (chunk) => {
+    let bytes = 0
+    let settled = false
+    const cleanup = () => {
+      req.removeListener('data', onData)
+      req.removeListener('end', onEnd)
+      req.removeListener('aborted', onAborted)
+      req.removeListener('error', onError)
+    }
+    const finish = (callback, value) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      callback(value)
+    }
+    const onData = (chunk) => {
+      bytes += chunk.length
+      if (bytes > maxBytes) {
+        req.resume()
+        finish(reject, new Error('Request body is too large.'))
+        return
+      }
       body += chunk
-      if (body.length > 20_000) req.destroy()
-    })
-    req.on('end', () => {
-      try { resolve(JSON.parse(body || '{}')) } catch { reject(new Error('Invalid request body.')) }
-    })
+    }
+    const onEnd = () => {
+      try { finish(resolve, JSON.parse(body || '{}')) } catch { finish(reject, new Error('Invalid request body.')) }
+    }
+    const onAborted = () => finish(reject, new Error('Request aborted.'))
+    const onError = (err) => finish(reject, err)
+    req.on('data', onData)
+    req.on('end', onEnd)
+    req.on('aborted', onAborted)
+    req.on('error', onError)
   })
 }
 
@@ -145,8 +194,8 @@ const server = http.createServer(async (req, res) => {
   }
   if (req.method === 'GET' && url.pathname === '/events') {
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Content-Type-Options': 'nosniff' })
-    browserClients.add(res)
-    res.write('data: ' + JSON.stringify(stateForBrowser()) + '\n\n')
+    browserClients.set(res, { blocked: false })
+    publish()
     req.on('close', () => browserClients.delete(res))
     return
   }
@@ -181,7 +230,7 @@ function shutdown () {
   }
   pending.clear()
   if (worker) worker.close()
-  for (const client of browserClients) client.end()
+  for (const client of browserClients.keys()) client.end()
   browserClients.clear()
   server.close(() => process.exit(0))
   setTimeout(() => process.exit(0), 1000)
